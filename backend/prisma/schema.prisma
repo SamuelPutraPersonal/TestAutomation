@@ -1,0 +1,136 @@
+// Warehouse & Order Fulfillment Portal — data model
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  OPERATOR
+}
+
+enum OrderStatus {
+  PENDING
+  ALLOCATED
+  PACKED
+  SHIPPED
+  CANCELLED
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  name         String
+  passwordHash String
+  role         Role     @default(OPERATOR)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  refreshTokens RefreshToken[]
+  orders        Order[]
+  auditLogs     AuditLog[]
+
+  @@index([role])
+}
+
+// Refresh token rotation: each token is single-use. Reuse of a revoked token
+// revokes the entire `family` (theft detection).
+model RefreshToken {
+  id           String    @id @default(uuid())
+  userId       String
+  tokenHash    String    @unique // SHA-256 of the opaque token; raw value is never stored
+  family       String // shared by all tokens descended from one login
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  replacedById String? // next token in the rotation chain
+  createdAt    DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([family])
+}
+
+model Sku {
+  id               String   @id @default(uuid())
+  code             String   @unique // e.g. "WIDGET-001"
+  name             String
+  description      String?
+  unitPrice        Decimal  @db.Decimal(10, 2)
+  quantityOnHand   Int      @default(0) // physical stock, includes reserved
+  quantityReserved Int      @default(0) // allocated to non-shipped orders
+  reorderThreshold Int      @default(10)
+  isActive         Boolean  @default(true)
+  // Optimistic locking: updates must be `WHERE id = ? AND version = ?` and increment.
+  version          Int      @default(1)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  orderItems OrderItem[]
+
+  // available = quantityOnHand - quantityReserved (derived, never stored)
+  @@index([isActive])
+}
+
+model Order {
+  id             String      @id @default(uuid())
+  orderNumber    String      @unique // human-friendly, e.g. "ORD-000123"
+  customerName   String
+  shippingAddress String
+  status         OrderStatus @default(PENDING)
+  trackingNumber String?     @unique // set by the background worker after SHIPPED
+  cancelReason   String?
+  version        Int         @default(1) // optimistic lock for state transitions
+  createdById    String
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  allocatedAt    DateTime?
+  packedAt       DateTime?
+  shippedAt      DateTime?
+  cancelledAt    DateTime?
+
+  createdBy User        @relation(fields: [createdById], references: [id])
+  items     OrderItem[]
+
+  @@index([status])
+  @@index([createdById])
+  @@index([createdAt])
+}
+
+model OrderItem {
+  id        String  @id @default(uuid())
+  orderId   String
+  skuId     String
+  quantity  Int
+  unitPrice Decimal @db.Decimal(10, 2) // price snapshot at order time
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  sku   Sku   @relation(fields: [skuId], references: [id])
+
+  @@unique([orderId, skuId])
+  @@index([skuId])
+}
+
+// Append-only. Phase 2 migration adds a DB trigger rejecting UPDATE/DELETE
+// so immutability is enforced at the database level, not just in app code.
+model AuditLog {
+  id         String   @id @default(uuid())
+  action     String // e.g. "ORDER_SHIPPED", "SKU_UPDATED", "USER_CREATED"
+  entityType String // "Order" | "Sku" | "User"
+  entityId   String
+  actorId    String? // null for system/background-worker entries
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  actor User? @relation(fields: [actorId], references: [id])
+
+  @@index([entityType, entityId])
+  @@index([action])
+  @@index([createdAt])
+}

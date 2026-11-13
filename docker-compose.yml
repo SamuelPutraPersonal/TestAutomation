@@ -1,0 +1,26 @@
+name: warehouse-portal
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: wfp-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-wfp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-wfp_password}
+      POSTGRES_DB: ${POSTGRES_DB:-wfp}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - wfp_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-wfp} -d ${POSTGRES_DB:-wfp}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Backend and frontend run on the host in dev (npm run dev) for fast reload.
+  # Containerized app services are added in Phase 4 under the "full" profile.
+
+volumes:
+  wfp_pgdata:
